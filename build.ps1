@@ -1,83 +1,113 @@
 [CmdletBinding()]
 param(
+    [Parameter(Mandatory = $true)]
+    [ValidateNotNullOrEmpty()]
+    [string]$Mod,
     [string]$GamePath,
     [string]$ManagedPath,
     [string]$BepInExCorePath,
     [string]$CompilerPath,
-    [string]$Name = 'LoadProfiler',
-    [string]$PluginFolder = 'LoadProfiler',
     [switch]$Install
 )
 $ErrorActionPreference = 'Stop'
-$repoRoot = $PSScriptRoot
-$sourceDir = Join-Path $repoRoot 'Source'
-$outDir = Join-Path $repoRoot 'build'
+$RepoRoot = $PSScriptRoot
 
-function Find-FirstExistingPath([string[]]$Candidates) {
-    foreach ($candidate in $Candidates) {
-        if (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
-            return (Resolve-Path -LiteralPath $candidate).Path
+function Find-Directory([string[]]$Candidates) {
+    foreach ($Candidate in $Candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($Candidate) -and
+            (Test-Path -LiteralPath $Candidate -PathType Container)) {
+            return (Resolve-Path -LiteralPath $Candidate).Path
         }
     }
     return $null
 }
 
-if (-not $ManagedPath -and $GamePath) { $ManagedPath = Join-Path $GamePath 'UltimateChickenHorse_Data\Managed' }
-if (-not $BepInExCorePath -and $GamePath) { $BepInExCorePath = Join-Path $GamePath 'BepInEx\core' }
+$ModDirectory = Join-Path $RepoRoot $Mod
+if (-not (Test-Path -LiteralPath $ModDirectory -PathType Container)) {
+    $Available = @(Get-ChildItem -LiteralPath $RepoRoot -Directory |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'Source') } |
+        Select-Object -ExpandProperty Name)
+    throw "Mod '$Mod' not found. Available mods: $($Available -join ', ')"
+}
+
+$SourceDirectory = Join-Path $ModDirectory 'Source'
+if (-not (Test-Path -LiteralPath $SourceDirectory -PathType Container)) {
+    throw "Missing Source directory: $SourceDirectory"
+}
+$Sources = @(Get-ChildItem -LiteralPath $SourceDirectory -Filter '*.cs' -File)
+if ($Sources.Count -eq 0) { throw "No .cs files found in $SourceDirectory" }
+
+if ($GamePath) {
+    if (-not $ManagedPath) { $ManagedPath = Join-Path $GamePath 'UltimateChickenHorse_Data\Managed' }
+    if (-not $BepInExCorePath) { $BepInExCorePath = Join-Path $GamePath 'BepInEx\core' }
+}
 if (-not $ManagedPath) {
-    $ManagedPath = Find-FirstExistingPath @(
-        (Join-Path $repoRoot 'refs\Managed'),
+    $ManagedPath = Find-Directory @(
+        (Join-Path $RepoRoot 'refs\Managed'),
         (Join-Path ${env:ProgramFiles(x86)} 'Steam\steamapps\common\Ultimate Chicken Horse\UltimateChickenHorse_Data\Managed'),
         (Join-Path $env:ProgramFiles 'Steam\steamapps\common\Ultimate Chicken Horse\UltimateChickenHorse_Data\Managed')
     )
+} elseif (Test-Path -LiteralPath $ManagedPath -PathType Container) {
+    $ManagedPath = (Resolve-Path -LiteralPath $ManagedPath).Path
 }
 if (-not $BepInExCorePath) {
-    $BepInExCorePath = Find-FirstExistingPath @(
-        (Join-Path $repoRoot 'refs\BepInEx\core'),
+    $BepInExCorePath = Find-Directory @(
+        (Join-Path $RepoRoot 'refs\BepInEx\core'),
         (Join-Path ${env:ProgramFiles(x86)} 'Steam\steamapps\common\Ultimate Chicken Horse\BepInEx\core'),
         (Join-Path $env:ProgramFiles 'Steam\steamapps\common\Ultimate Chicken Horse\BepInEx\core')
     )
+} elseif (Test-Path -LiteralPath $BepInExCorePath -PathType Container) {
+    $BepInExCorePath = (Resolve-Path -LiteralPath $BepInExCorePath).Path
 }
-if (-not $ManagedPath -or -not (Test-Path -LiteralPath (Join-Path $ManagedPath 'Assembly-CSharp.dll'))) {
-    throw 'Could not find game Managed assemblies. Pass -GamePath, -ManagedPath, or place local references in refs\Managed.'
-}
-if (-not $BepInExCorePath -or -not (Test-Path -LiteralPath (Join-Path $BepInExCorePath 'BepInEx.dll'))) {
-    throw 'Could not find BepInEx 5 core assemblies. Pass -GamePath, -BepInExCorePath, or place references in refs\BepInEx\core.'
-}
-if (-not (Test-Path -LiteralPath $sourceDir)) { throw "Source directory not found: $sourceDir" }
-$sources = @(Get-ChildItem -LiteralPath $sourceDir -Filter '*.cs' -File)
-if ($sources.Count -eq 0) { throw "No .cs files found in $sourceDir" }
 
-if (-not $CompilerPath) {
-    $CompilerPath = Find-FirstExistingPath @(
+if (-not $ManagedPath -or -not (Test-Path -LiteralPath (Join-Path $ManagedPath 'Assembly-CSharp.dll') -PathType Leaf)) {
+    throw "Game Managed assemblies not found. Pass -GamePath/-ManagedPath or use refs\Managed."
+}
+if (-not $BepInExCorePath -or -not (Test-Path -LiteralPath (Join-Path $BepInExCorePath 'BepInEx.dll') -PathType Leaf)) {
+    throw "BepInEx core assemblies not found. Pass -GamePath/-BepInExCorePath or use refs\BepInEx\core."
+}
+$HarmonyPath = Join-Path $BepInExCorePath '0Harmony.dll'
+if (-not (Test-Path -LiteralPath $HarmonyPath -PathType Leaf)) { throw "Harmony DLL not found: $HarmonyPath" }
+
+if ($CompilerPath) {
+    if (-not (Test-Path -LiteralPath $CompilerPath -PathType Leaf)) { throw "Compiler not found: $CompilerPath" }
+    $CompilerPath = (Resolve-Path -LiteralPath $CompilerPath).Path
+} else {
+    foreach ($Candidate in @(
         (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
         (Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
-    )
-    if (-not $CompilerPath) {
-        $command = Get-Command 'csc.exe' -ErrorAction SilentlyContinue
-        if ($command) { $CompilerPath = $command.Source }
+    )) {
+        if (Test-Path -LiteralPath $Candidate -PathType Leaf) { $CompilerPath = $Candidate; break }
     }
+    if (-not $CompilerPath) {
+        $Csc = Get-Command 'csc.exe' -ErrorAction SilentlyContinue
+        if ($Csc) { $CompilerPath = $Csc.Source }
+    }
+    if (-not $CompilerPath) { throw 'csc.exe not found. Install compatible .NET Framework build tools or pass -CompilerPath.' }
 }
-if (-not $CompilerPath -or -not (Test-Path -LiteralPath $CompilerPath)) {
-    throw 'C# compiler csc.exe not found. Install .NET Framework 4.x Developer Pack/Build Tools, or pass -CompilerPath.'
-}
-$harmonyPath = Join-Path $BepInExCorePath '0Harmony.dll'
-if (-not (Test-Path -LiteralPath $harmonyPath)) { throw "Harmony assembly not found: $harmonyPath" }
 
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$output = Join-Path $outDir ($Name + '.dll')
-$arguments = @('/nologo','/noconfig','/langversion:5','/nostdlib+','/target:library','/optimize+','/debug-','/warn:4',('/out:"' + $output + '"'))
-foreach ($reference in Get-ChildItem -LiteralPath $ManagedPath -Filter '*.dll' -File) { $arguments += ('/reference:"' + $reference.FullName + '"') }
-foreach ($referenceName in @('BepInEx.dll','0Harmony.dll')) { $arguments += ('/reference:"' + (Join-Path $BepInExCorePath $referenceName) + '"') }
-foreach ($source in $sources) { $arguments += ('"' + $source.FullName + '"') }
-$result = & $CompilerPath $arguments 2>&1
-if ($LASTEXITCODE -ne 0) { throw ($result -join [Environment]::NewLine) }
-Write-Output "Built $output"
+$OutputDirectory = Join-Path $ModDirectory 'build'
+New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
+$OutputPath = Join-Path $OutputDirectory ($Mod + '.dll')
+$Arguments = @('/nologo','/noconfig','/langversion:5','/nostdlib+','/target:library','/optimize+','/debug-','/warn:4',('/out:"' + $OutputPath + '"'))
+foreach ($Reference in Get-ChildItem -LiteralPath $ManagedPath -Filter '*.dll' -File) {
+    $Arguments += ('/reference:"' + $Reference.FullName + '"')
+}
+foreach ($ReferenceName in @('BepInEx.dll','0Harmony.dll')) {
+    $Arguments += ('/reference:"' + (Join-Path $BepInExCorePath $ReferenceName) + '"')
+}
+foreach ($Source in $Sources) { $Arguments += ('"' + $Source.FullName + '"') }
+
+Write-Output "Building $Mod..."
+$CompilerOutput = & $CompilerPath $Arguments 2>&1
+if ($LASTEXITCODE -ne 0) { throw ("Compilation failed:`n" + ($CompilerOutput -join [Environment]::NewLine)) }
+if ($CompilerOutput) { $CompilerOutput | ForEach-Object { Write-Output $_ } }
+Write-Output "Build successful: $OutputPath"
 
 if ($Install) {
-    if (-not $GamePath) { throw 'The -Install switch requires -GamePath <game folder>.' }
-    $target = Join-Path $GamePath ('BepInEx\plugins\' + $PluginFolder)
-    New-Item -ItemType Directory -Force -Path $target | Out-Null
-    Copy-Item -LiteralPath $output -Destination $target -Force
-    Write-Output "Installed to $target"
+    if (-not $GamePath) { throw '-Install requires -GamePath.' }
+    $Destination = Join-Path $GamePath ('BepInEx\plugins\' + $Mod)
+    New-Item -ItemType Directory -Force -Path $Destination | Out-Null
+    Copy-Item -LiteralPath $OutputPath -Destination (Join-Path $Destination ($Mod + '.dll')) -Force
+    Write-Output "Installed to: $Destination"
 }

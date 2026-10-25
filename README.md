@@ -2,7 +2,7 @@
 
 A collection of performance and optimization plugins for *Ultimate Chicken Horse*, built with BepInEx 5 and Harmony.
 
-Each plugin is maintained in its own directory. A shared root-level build script compiles individual plugins without duplicating build logic.
+Each plugin is maintained in its own directory. A shared root-level build script compiles individual plugins.
 
 ## Repository Structure
 
@@ -57,8 +57,6 @@ Build UCHListenerFix:
 .\build.ps1 -Mod UCHListenerFix
 ```
 
-The compiled DLL is placed in the selected plugin's `build` directory. Building one plugin does not require building the others.
-
 ## Custom Game Installation
 
 If the game is installed in a non-default Steam library, specify its path:
@@ -106,21 +104,3 @@ NewPlugin/
 ```
 
 The shared build script should automatically discover the new plugin's source files and create its output directory.
-
-## Git Ignore
-
-Generated builds and local reference assemblies should not be committed. A suitable `.gitignore` is:
-
-```gitignore
-**/build/
-refs/
-*.user
-*.suo
-```
-
-## Notes
-
-- Each plugin is compiled independently.
-- Keep plugin-specific source code and configuration with the relevant plugin.
-- Do not commit proprietary game assemblies or locally installed BepInEx DLLs.
-- The root build script must support the `-Mod` parameter; the individual scripts must be consolidated into that shared script for these instructions to work.
